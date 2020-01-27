@@ -2,6 +2,8 @@
 
 
 Very usefull  - https://github.com/ashharr/big-data      
+https://github.com/yulongwang12/LeetCode/tree/master/MySQL         - Leetcode
+
 
 Hadoop, Apache Spark, Apache Hive HDFS et cetera 
 
@@ -12,7 +14,15 @@ https://github.com/ashharr/big-data
 03_Data_Processing_Layer 
 04_Data_Query_Layer 
 05_Data_Processing_pipeline
+******************************************************
+SQl 
 
+
+https://github.com/shawlu95/Beyond-LeetCode-SQL
+
+https://github.com/yulongwang12/LeetCode/tree/master/MySQL
+
+All use cases
 
 
 
@@ -21,6 +31,8 @@ https://github.com/ashharr/big-data
 
 
 Hive _   https://github.com/Pushkr/Apache-Spark-Hands-On
+
+https://github.com/dheeraj0606/OptimizationTechniques
 
 https://github.com/zaratsian/Apache_Hive
 
@@ -53,7 +65,6 @@ https://github.com/VarunSundaram-vs/Analysis-of-h1b-using-Big-Data
 
 
 
-
 ********************************************************************************
 
 spark_practice
@@ -65,6 +76,23 @@ Spark conficugaration details   - bigdata/spark/on_yarn/spark-defaults.conf
 
 https://github.com/jiaxicheng/bigdata/blob/master/spark/on_yarn/spark-defaults.conf
 
+Python notebook
+https://github.com/sjyuan-cc/programming-books/blob/master/Language/Python/Effective%20Python.pdf
+
+
+Telegram link 
+what about extraOptimizations? you can  take example in  https://github.com/apache/spark/blob/0025a8397f8723011917239fe47518457d4d6860/sql/core/src/test/scala/org/apache/spark/sql/SQLContextSuite.scala 
+
+https://www.waitingforcode.com/apache-spark-sql/introduction-custom-optimization-apache-spark-sql/read
+
+. You can also see example in https://www.waitingforcode.com/apache-spark-sql/introduction-custom-optimization-apache-spark-sql/read .  By the way. it's part of code override def defaultBatches: Seq[Batch] = (preOptimizationBatches ++ super.defaultBatches :+
+    Batch("Optimize Metadata Only Query", Once, OptimizeMetadataOnlyQuery(catalog)) :+
+    Batch("Extract Python UDFs", Once,
+      Seq(ExtractPythonUDFFromAggregate, ExtractPythonUDFs): _*) :+
+    Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions) :+
+    Batch("Schema Pruning", Once, SchemaPruning)) ++
+    postHocOptimizationBatches :+
+    Batch("User Provided Optimizers", fixedPoint, experimentalMethods.extraOptimizations: _*)  when it is injected in default batch of rules
 
 
 
@@ -76,6 +104,52 @@ https://github.com/jiaxicheng/bigdata/blob/master/spark/on_yarn/spark-defaults.c
 
 
 
+Object - Objects have states and behaviors. An object is an instance of a class. Example - A dog has states - color, name, breed as well as behaviors - wagging, barking, and eating.
+
+Class - A class can be defined as a template/blueprint that describes the behaviors/states that are related to the class.
+
+Methods - A method is basically a behavior. A class can contain many methods. It is in methods where the logics are written, data is manipulated and all the actions are executed.
+
+Fields - Each object has its unique set of instance variables, which are called fields. An object's state is created by the values assigned to these fields.
+
+Closure - A closure is a function, whose return value depends on the value of one or more variables declared outside this function.
+
+Traits - A trait encapsulates method and field definitions, which can then be reused by mixing them into classes. Traits are used to define object types by specifying the signature of the supported methods.
+
+
+We can execute a Scala program in two modes: one is interactive mode and another is script mode.
+
+Basic Syntax
+The following are the basic syntaxes and coding conventions in Scala programming:
+
+Case Sensitivity - Scala is case-sensitive, which means identifier Hello and hello would have different meaning in Scala.
+
+Class Names - For all class names, the first letter should be in Upper Case. If several words are used to form a name of the class, each inner word's first letter should be in Upper Case.
+
+Example - class MyFirstScalaClass.
+
+Method Names - All method names should start with a Lower Case letter. If multiple words are used to form the name of the method, then each inner word's first letter should be in Upper Case.
+
+Example - def myMethodName()
+
+Program File Name - Name of the program file should exactly match the object name. When saving the file you should save it using the object name (Remember Scala is case-sensitive) and append ‘.scala’ to the end of the name. (If the file name and the object name do not match your program will not compile).
+
+Example - Assume 'HelloWorld' is the object name. Then the file should be saved as 'HelloWorld.scala'.
+
+def main(args: Array[String]) - Scala program processing starts from the main() method which is a mandatory part of every Scala Program.
+
+
+
+
+create table empdetails(name string,salary int,department string,startdate varchar,enddate varchar);
+
+INSERT INTO empdetails(name ,salary ,department ,startdate ,enddate)
+VALUES ('H', '10', 'IT', '2012', '2018'),('M', '20', 'CSE', '2013', '2014'),('S', '30', 'EEE', '2014', '2015'),('R', '40', 'IT', '2015', '2016'),('O', '50', 'CSE', '2016', '2017'),('M', '60', 'EEE', '2017', '2018');
+
+1.select department, min(salary) as salary from empdetails group by department;
+
+3.select name, department, min(salary) from empdetails a where salary not in(select min(salary)  from empdetails b  group by department)group by name, department;
+3.select name, department, max(salary) from empdetails a where salary not in(select max(salary)  from empdetails b  group by department)group by name, department;
 
 
 
