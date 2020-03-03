@@ -1,0 +1,292 @@
+Distribution of Executors, Cores and Memory for a Spark Application
+by beginnershadoop · September 30, 2019 
+
+Resource Allocation is an important aspect during the execution of any spark job. If not configured correctly, a spark job can consume entire cluster resources and make other applications starve for resources
+Let’s start with some basic definitions of the terms used in handling Spark applications.
+Partitions : A partition is a small chunk of a large distributed data set. Spark manages data using partitions that helps parallelize data processing with minimal data shuffle across the executors.
+Task : A task is a unit of work that can be run on a partition of a distributed dataset and gets executed on a single executor. The unit of parallel execution is at the task level.All the tasks with-in a single stage can be executed in parallel
+Executor : An executor is a single JVM process which is launched for an application on a worker node. Executor runs tasks and keeps data in memory or disk storage across them. Each application has its own executors. A single node can run multiple executors and executors for an application can span multiple worker nodes. An executor stays up for the
+duration of the Spark Application and runs the tasks in multiple threads. The number of executors for a spark application can be specified inside the SparkConf or via the flag –num-executors from command-line.
+Cluster Manager : An external service for acquiring resources on the cluster (e.g. standalone manager, Mesos, YARN). Spark is agnostic to a cluster manager as long as it can acquire executor processes and those can communicate with each other.We are primarily interested in Yarn as the cluster manager. A spark cluster can run in either yarn cluster or yarn-client mode:
+yarn-client mode – A driver runs on client process, Application Master is only used for requesting resources from YARN.
+yarn-cluster mode – A driver runs inside application master process, client goes away once the application is initialized
+Cores : A core is a basic computation unit of CPU and a CPU may have one or more cores to perform tasks at a given time. The more cores we have, the more work we can do. In spark, this controls the number of parallel tasks an executor can run.
+
+Distribution of Executors, Cores and Memory for a Spark Application running in Yarn:
+spark-submit –class –num-executors ? –executor-cores ? –executor-memory ? ….
+Ever wondered how to configure –num-executors, –executor-memory and –execuor-cores spark config params for your cluster?
+Following list captures some recommendations to keep in mind while configuring them:
+Hadoop/Yarn/OS Deamons: When we run spark application using a cluster manager like Yarn, there’ll be several daemons that’ll run in the background like NameNode, Secondary NameNode, DataNode, JobTracker and TaskTracker. So, while specifying num-executors, we need to make sure that we leave aside enough cores (~1 core per node) for these daemons to run smoothly.
+Yarn ApplicationMaster (AM): ApplicationMaster is responsible for negotiating resources from the ResourceManager and working with the NodeManagers to execute and monitor the containers and their resource consumption. If we are running spark on yarn, then we need to budget in the resources that AM would need (~1024MB and 1 Executor).
+HDFS Throughput: HDFS client has trouble with tons of concurrent threads. It was observed that HDFS achieves full write throughput with ~5 tasks per executor . So it’s good to keep the number of cores per executor below that number.
+MemoryOverhead: Following picture depicts spark-yarn-memory-usage.
+
+Two things to make note of from this picture:
+
+1
+2
+3
+4
+5
+ Full memory requested to yarn per executor =
+          spark-executor-memory + spark.yarn.executor.memoryOverhead.
+ spark.yarn.executor.memoryOverhead = 
+        	Max(384MB, 7% of spark.executor-memory)
+ 
+So, if we request 20GB per executor, AM will actually get 20GB + memoryOverhead = 20 + 7% of 20GB = ~23GB memory for us.
+Running executors with too much memory often results in excessive garbage collection delays.
+Running tiny executors (with a single core and just enough memory needed to run a single task, for example) throws away the benefits that come from running multiple tasks in a single JVM.
+There are two ways in which we configure the executor and core details to the Spark job. They are:
+Static Allocation – The values are given as part of spark-submit
+Dynamic Allocation – The values are picked up based on the requirement (size of data, amount of computations needed) and released after use. This helps the resources to be re-used for other applications.
+Static allocation: 
+Now, let’s consider a 10 node cluster with following config and analyse different possibilities of executors-core-memory distribution:
+
+1
+2
+3
+4
+**Cluster Config:**
+10 Nodes
+16 cores per Node
+64GB RAM per Node
+First Approach: Tiny executors [One Executor per core]:
+Tiny executors essentially means one executor per core. Following table depicts the values of our spar-config params with this approach:
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+--num-executors = In this approach, we'll assign one executor per core
+                = total-cores-in-cluster
+                = num-cores-per-node * total-nodes-in-cluster
+                = 16 x 10 = 160
+--executor-cores  = 1 (one executor per core)
+--executor-memory = amount of memory per executor
+                  = mem-per-node/num-executors-per-node
+                  = 64GB/16 = 4GB
+ 
+Analysis: With only one executor per core, as we discussed above, we’ll not be able to take advantage of running multiple tasks in the same JVM. Also, shared/cached variables like broadcast variables and accumulators will be replicated in each core of the nodes which is 16 times. Also, we are not leaving enough memory overhead for Hadoop/Yarn daemon processes and we are not counting in ApplicationManager. NOT GOOD!
+Second Approach: Fat executors (One Executor per node):
+Fat executors essentially means one executor per node. Following table depicts the values of our spark-config params with this approach:
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+--num-executors = In this approach, we'll assign one executor per node
+                = total-nodes-in-cluster
+                = 10
+--executor-cores = one executor per node means all the cores of the node are assigned to one executor
+                 = total-cores-in-a-node
+                 = 16
+--executor-memory = amount of memory per executor
+                  = mem-per-node/num-executors-per-node
+                  = 64GB/1 = 64GB
+ 
+Analysis: With all 16 cores per executor, apart from ApplicationManager and daemon processes are not counted for, HDFS throughput will hurt and it’ll result in excessive garbage results. Also,NOT GOOD!
+Third Approach: Balance between Fat (vs) Tiny
+According to the recommendations which we discussed above:
+Based on the recommendations mentioned above, Let’s assign 5 core per executors => --executor-cores = 5 (for good HDFS throughput)
+Leave 1 core per node for Hadoop/Yarn daemons => Num cores available per node = 16-1 = 15
+So, Total available of cores in cluster = 15 x 10 = 150
+Number of available executors = (total cores/num-cores-per-executor) = 150/5 = 30
+Leaving 1 executor for ApplicationManager => --num-executors = 29
+Number of executors per node = 30/10 = 3
+Memory per executor = 64GB/3 = 21GB
+Counting off heap overhead = 7% of 21GB = 3GB. So, actual --executor-memory = 21 – 3 = 18GB
+So, recommended config is: 29 executors, 18GB memory each and 5 cores each!!
+Analysis: It is obvious as to how this third approach has found right balance between Fat vs Tiny approaches. Needless to say, it achieved parallelism of a fat executor and best throughputs of a tiny executor!!
+Dynamic Allocation
+Note: Upper bound for the number of executors if dynamic allocation is enabled is infinity. So this says that spark application can eat away all the resources if needed. In a cluster where we have other applications running and they also need cores to run the tasks, we need to make sure that we assign the cores at cluster level.
+This means that we can allocate specific number of cores for YARN based applications based on user access. So we can create a spark_user and then give cores (min/max) for that user. These limits are for sharing between spark and other applications which run on YARN.
+To understand dynamic allocation, we need to have knowledge of the following properties:
+spark.dynamicAllocation.enabled – when this is set to true we need not mention executors. The reason is below:
+The static parameter numbers we give at spark-submit is for the entire job duration. However if dynamic allocation comes into picture, there would be different stages like the following:
+What is the number for executors to start with:
+Initial number of executors (spark.dynamicAllocation.initialExecutors) to start with
+ Controlling the number of executors dynamically:
+Then based on load (tasks pending) how many executors to request. This would eventually be the number what we give at spark-submit in static way. So once the initial executor numbers are set, we go to min (spark.dynamicAllocation.minExecutors) and max (spark.dynamicAllocation.maxExecutors) numbers.
+When to ask new executors or give away current executors:
+When do we request new executors (spark.dynamicAllocation.schedulerBacklogTimeout) – This means that there have been pending tasks for this much duration. So the request for the number of executors requested in each round increases exponentially from the previous round. For instance, an application will add 1 executor in the first round, and then 2, 4, 8 and so on executors in the subsequent rounds. At a specific point, the above property max comes into picture.
+When do we give away an executor is set using spark.dynamicAllocation.executorIdleTimeout.
+To conclude, if we need more control over the job execution time, monitor the job for unexpected data volume the static numbers would help. By moving to dynamic, the resources would be used at the background and the jobs involving unexpected volumes might affect other applications.
+
+
+Transformation
+
+Transformations
+The following table lists some of the common transformations supported by Spark. Refer to the RDD API doc (Scala, Java, Python, R) and pair RDD functions doc (Scala, Java) for details.
+Transformation	Meaning
+map(func) 	Return a new distributed dataset formed by passing each element of the source through a function func. 
+filter(func) 	Return a new dataset formed by selecting those elements of the source on which func returns true. 
+flatMap(func) 	Similar to map, but each input item can be mapped to 0 or more output items (so func should return a Seq rather than a single item). 
+mapPartitions(func) 	Similar to map, but runs separately on each partition (block) of the RDD, so func must be of type Iterator<T> => Iterator<U> when running on an RDD of type T. 
+mapPartitionsWithIndex(func) 	Similar to mapPartitions, but also provides func with an integer value representing the index of the partition, so func must be of type (Int, Iterator<T>) => Iterator<U> when running on an RDD of type T. 
+sample(withReplacement, fraction, seed) 	Sample a fraction fraction of the data, with or without replacement, using a given random number generator seed. 
+union(otherDataset) 	Return a new dataset that contains the union of the elements in the source dataset and the argument. 
+intersection(otherDataset) 	Return a new RDD that contains the intersection of elements in the source dataset and the argument. 
+distinct([numPartitions])) 	Return a new dataset that contains the distinct elements of the source dataset.
+groupByKey([numPartitions]) 	When called on a dataset of (K, V) pairs, returns a dataset of (K, Iterable<V>) pairs. 
+Note: If you are grouping in order to perform an aggregation (such as a sum or average) over each key, using reduceByKey or aggregateByKey will yield much better performance. 
+Note: By default, the level of parallelism in the output depends on the number of partitions of the parent RDD. You can pass an optional numPartitions argument to set a different number of tasks. 
+reduceByKey(func, [numPartitions]) 	When called on a dataset of (K, V) pairs, returns a dataset of (K, V) pairs where the values for each key are aggregated using the given reduce function func, which must be of type (V,V) => V. Like in groupByKey, the number of reduce tasks is configurable through an optional second argument. 
+aggregateByKey(zeroValue)(seqOp, combOp, [numPartitions]) 	When called on a dataset of (K, V) pairs, returns a dataset of (K, U) pairs where the values for each key are aggregated using the given combine functions and a neutral "zero" value. Allows an aggregated value type that is different than the input value type, while avoiding unnecessary allocations. Like in groupByKey, the number of reduce tasks is configurable through an optional second argument. 
+sortByKey([ascending], [numPartitions]) 	When called on a dataset of (K, V) pairs where K implements Ordered, returns a dataset of (K, V) pairs sorted by keys in ascending or descending order, as specified in the boolean ascending argument.
+join(otherDataset, [numPartitions]) 	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (V, W)) pairs with all pairs of elements for each key. Outer joins are supported through leftOuterJoin, rightOuterJoin, and fullOuterJoin. 
+cogroup(otherDataset, [numPartitions]) 	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (Iterable<V>, Iterable<W>)) tuples. This operation is also called groupWith. 
+cartesian(otherDataset) 	When called on datasets of types T and U, returns a dataset of (T, U) pairs (all pairs of elements). 
+pipe(command, [envVars]) 	Pipe each partition of the RDD through a shell command, e.g. a Perl or bash script. RDD elements are written to the process's stdin and lines output to its stdout are returned as an RDD of strings. 
+coalesce(numPartitions) 	Decrease the number of partitions in the RDD to numPartitions. Useful for running operations more efficiently after filtering down a large dataset. 
+repartition(numPartitions) 	Reshuffle the data in the RDD randomly to create either more or fewer partitions and balance it across them. This always shuffles all data over the network. 
+repartitionAndSortWithinPartitions(partitioner) 	Repartition the RDD according to the given partitioner and, within each resulting partition, sort records by their keys. This is more efficient than calling repartition and then sorting within each partition because it can push the sorting down into the shuffle machinery. 
+Actions
+The following table lists some of the common actions supported by Spark. Refer to the RDD API doc (Scala, Java, Python, R)
+and pair RDD functions doc (Scala, Java) for details.
+Action	Meaning
+reduce(func) 	Aggregate the elements of the dataset using a function func (which takes two arguments and returns one). The function should be commutative and associative so that it can be computed correctly in parallel. 
+collect() 	Return all the elements of the dataset as an array at the driver program. This is usually useful after a filter or other operation that returns a sufficiently small subset of the data. 
+count() 	Return the number of elements in the dataset. 
+first() 	Return the first element of the dataset (similar to take(1)). 
+take(n) 	Return an array with the first n elements of the dataset. 
+takeSample(withReplacement, num, [seed]) 	Return an array with a random sample of num elements of the dataset, with or without replacement, optionally pre-specifying a random number generator seed.
+takeOrdered(n, [ordering]) 	Return the first n elements of the RDD using either their natural order or a custom comparator. 
+saveAsTextFile(path) 	Write the elements of the dataset as a text file (or set of text files) in a given directory in the local filesystem, HDFS or any other Hadoop-supported file system. Spark will call toString on each element to convert it to a line of text in the file. 
+saveAsSequenceFile(path) 
+(Java and Scala) 	Write the elements of the dataset as a Hadoop SequenceFile in a given path in the local filesystem, HDFS or any other Hadoop-supported file system. This is available on RDDs of key-value pairs that implement Hadoop's Writable interface. In Scala, it is also available on types that are implicitly convertible to Writable (Spark includes conversions for basic types like Int, Double, String, etc). 
+saveAsObjectFile(path) 
+(Java and Scala) 	Write the elements of the dataset in a simple format using Java serialization, which can then be loaded using SparkContext.objectFile(). 
+countByKey() 	Only available on RDDs of type (K, V). Returns a hashmap of (K, Int) pairs with the count of each key. 
+foreach(func) 	Run a function func on each element of the dataset. This is usually done for side effects such as updating an Accumulator or interacting with external storage systems. 
+Note: modifying variables other than Accumulators outside of the foreach() may result in undefined behavior. See Understanding closures for more details.
+Distribution of Executors, Cores and Memory for a Spark Application
+BY BEGINNERSHADOOP · SEPTEMBER 30, 2019 
+Resource Allocation is an important aspect during the execution of any spark job. If not configured correctly, a spark job can consume entire cluster resources and make other applications starve for resources
+Let’s start with some basic definitions of the terms used in handling Spark applications.
+Partitions : A partition is a small chunk of a large distributed data set. Spark manages data using partitions that helps parallelize data processing with minimal data shuffle across the executors.
+Task : A task is a unit of work that can be run on a partition of a distributed dataset and gets executed on a single executor. The unit of parallel execution is at the task level.All the tasks with-in a single stage can be executed in parallel
+Executor : An executor is a single JVM process which is launched for an application on a worker node. Executor runs tasks and keeps data in memory or disk storage across them. Each application has its own executors. A single node can run multiple executors and executors for an application can span multiple worker nodes. An executor stays up for the
+duration of the Spark Application and runs the tasks in multiple threads. The number of executors for a spark application can be specified inside the SparkConf or via the flag –num-executors from command-line.
+Cluster Manager : An external service for acquiring resources on the cluster (e.g. standalone manager, Mesos, YARN). Spark is agnostic to a cluster manager as long as it can acquire executor processes and those can communicate with each other.We are primarily interested in Yarn as the cluster manager. A spark cluster can run in either yarn cluster or yarn-client mode:
+yarn-client mode – A driver runs on client process, Application Master is only used for requesting resources from YARN.
+yarn-cluster mode – A driver runs inside application master process, client goes away once the application is initialized
+Cores : A core is a basic computation unit of CPU and a CPU may have one or more cores to perform tasks at a given time. The more cores we have, the more work we can do. In spark, this controls the number of parallel tasks an executor can run.
+ 
+Distribution of Executors, Cores and Memory for a Spark Application running in Yarn:
+spark-submit –class –num-executors ? –executor-cores ? –executor-memory ? ….
+Ever wondered how to configure –num-executors, –executor-memory and –execuor-cores spark config params for your cluster?
+Following list captures some recommendations to keep in mind while configuring them:
+•	Hadoop/Yarn/OS Deamons: When we run spark application using a cluster manager like Yarn, there’ll be several daemons that’ll run in the background like NameNode, Secondary NameNode, DataNode, JobTracker and TaskTracker. So, while specifying num-executors, we need to make sure that we leave aside enough cores (~1 core per node) for these daemons to run smoothly.
+•	Yarn ApplicationMaster (AM): ApplicationMaster is responsible for negotiating resources from the ResourceManager and working with the NodeManagers to execute and monitor the containers and their resource consumption. If we are running spark on yarn, then we need to budget in the resources that AM would need (~1024MB and 1 Executor).
+•	HDFS Throughput: HDFS client has trouble with tons of concurrent threads. It was observed that HDFS achieves full write throughput with ~5 tasks per executor . So it’s good to keep the number of cores per executor below that number.
+•	MemoryOverhead: Following picture depicts spark-yarn-memory-usage.
+ 
+Two things to make note of from this picture:
+ 
+1
+2
+3
+4
+5	Full memory requested to yarn per executor =
+          spark-executor-memory + spark.yarn.executor.memoryOverhead.
+spark.yarn.executor.memoryOverhead = 
+         Max(384MB, 7% of spark.executor-memory)
+ 
+So, if we request 20GB per executor, AM will actually get 20GB + memoryOverhead = 20 + 7% of 20GB = ~23GB memory for us.
+•	Running executors with too much memory often results in excessive garbage collection delays.
+•	Running tiny executors (with a single core and just enough memory needed to run a single task, for example) throws away the benefits that come from running multiple tasks in a single JVM.
+There are two ways in which we configure the executor and core details to the Spark job. They are:
+1.	Static Allocation – The values are given as part of spark-submit
+2.	Dynamic Allocation – The values are picked up based on the requirement (size of data, amount of computations needed) and released after use. This helps the resources to be re-used for other applications.
+Static allocation: 
+Now, let’s consider a 10 node cluster with following config and analyse different possibilities of executors-core-memory distribution:
+ 
+1
+2
+3
+4	**Cluster Config:**
+10 Nodes
+16 cores per Node
+64GB RAM per Node
+First Approach: Tiny executors [One Executor per core]:
+Tiny executors essentially means one executor per core. Following table depicts the values of our spar-config params with this approach:
+ 
+1
+2
+3
+4
+5
+6
+7
+8
+9	--num-executors = In this approach, we'll assign one executor per core
+                = total-cores-in-cluster
+                = num-cores-per-node * total-nodes-in-cluster
+                = 16 x 10 = 160
+--executor-cores  = 1 (one executor per core)
+--executor-memory = amount of memory per executor
+                  = mem-per-node/num-executors-per-node
+                  = 64GB/16 = 4GB
+ 
+Analysis: With only one executor per core, as we discussed above, we’ll not be able to take advantage of running multiple tasks in the same JVM. Also, shared/cached variables like broadcast variables and accumulators will be replicated in each core of the nodes which is 16 times. Also, we are not leaving enough memory overhead for Hadoop/Yarn daemon processes and we are not counting in ApplicationManager. NOT GOOD!
+Second Approach: Fat executors (One Executor per node):
+Fat executors essentially means one executor per node. Following table depicts the values of our spark-config params with this approach:
+ 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10	--num-executors = In this approach, we'll assign one executor per node
+                = total-nodes-in-cluster
+                = 10
+--executor-cores = one executor per node means all the cores of the node are assigned to one executor
+                 = total-cores-in-a-node
+                 = 16
+--executor-memory = amount of memory per executor
+                  = mem-per-node/num-executors-per-node
+                  = 64GB/1 = 64GB
+ 
+Analysis: With all 16 cores per executor, apart from ApplicationManager and daemon processes are not counted for, HDFS throughput will hurt and it’ll result in excessive garbage results. Also,NOT GOOD!
+Third Approach: Balance between Fat (vs) Tiny
+According to the recommendations which we discussed above:
+•	Based on the recommendations mentioned above, Let’s assign 5 core per executors => --executor-cores = 5 (for good HDFS throughput)
+•	Leave 1 core per node for Hadoop/Yarn daemons => Num cores available per node = 16-1 = 15
+•	So, Total available of cores in cluster = 15 x 10 = 150
+•	Number of available executors = (total cores/num-cores-per-executor) = 150/5 = 30
+•	Leaving 1 executor for ApplicationManager => --num-executors = 29
+•	Number of executors per node = 30/10 = 3
+•	Memory per executor = 64GB/3 = 21GB
+•	Counting off heap overhead = 7% of 21GB = 3GB. So, actual --executor-memory = 21 – 3 = 18GB
+So, recommended config is: 29 executors, 18GB memory each and 5 cores each!!
+Analysis: It is obvious as to how this third approach has found right balance between Fat vs Tiny approaches. Needless to say, it achieved parallelism of a fat executor and best throughputs of a tiny executor!!
+Dynamic Allocation
+Note: Upper bound for the number of executors if dynamic allocation is enabled is infinity. So this says that spark application can eat away all the resources if needed. In a cluster where we have other applications running and they also need cores to run the tasks, we need to make sure that we assign the cores at cluster level.
+This means that we can allocate specific number of cores for YARN based applications based on user access. So we can create a spark_user and then give cores (min/max) for that user. These limits are for sharing between spark and other applications which run on YARN.
+To understand dynamic allocation, we need to have knowledge of the following properties:
+spark.dynamicAllocation.enabled – when this is set to true we need not mention executors. The reason is below:
+The static parameter numbers we give at spark-submit is for the entire job duration. However if dynamic allocation comes into picture, there would be different stages like the following:
+What is the number for executors to start with:
+Initial number of executors (spark.dynamicAllocation.initialExecutors) to start with
+ Controlling the number of executors dynamically:
+Then based on load (tasks pending) how many executors to request. This would eventually be the number what we give at spark-submit in static way. So once the initial executor numbers are set, we go to min (spark.dynamicAllocation.minExecutors) and max (spark.dynamicAllocation.maxExecutors) numbers.
+When to ask new executors or give away current executors:
+When do we request new executors (spark.dynamicAllocation.schedulerBacklogTimeout) – This means that there have been pending tasks for this much duration. So the request for the number of executors requested in each round increases exponentially from the previous round. For instance, an application will add 1 executor in the first round, and then 2, 4, 8 and so on executors in the subsequent rounds. At a specific point, the above property max comes into picture.
+When do we give away an executor is set using spark.dynamicAllocation.executorIdleTimeout.
+To conclude, if we need more control over the job execution time, monitor the job for unexpected data volume the static numbers would help. By moving to dynamic, the resources would be used at the background and the jobs involving unexpected volumes might affect other applications.
+
